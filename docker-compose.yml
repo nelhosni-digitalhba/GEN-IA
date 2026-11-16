@@ -1,0 +1,18 @@
+# Infrastructure locale minimale : UNIQUEMENT MongoDB.
+# Ollama est lancé directement sur la machine (meilleures performances, accès GPU).
+services:
+  mongodb:
+    image: mongo:7
+    container_name: blueprint-mongodb
+    ports:
+      - "27017:27017"
+    volumes:
+      - mongo-data:/data/db
+    healthcheck:
+      test: ["CMD", "mongosh", "--quiet", "--eval", "db.adminCommand('ping')"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+volumes:
+  mongo-data:

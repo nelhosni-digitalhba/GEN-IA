@@ -1,0 +1,105 @@
+# =====================================================================
+#  customer-product-ai-blueprint — configuration
+#  Toutes les valeurs sont surchargeables par variables d'environnement
+#  (ex : SPRING_DATA_MONGODB_URI, SPRING_AI_OLLAMA_BASE_URL).
+# =====================================================================
+spring:
+  application:
+    name: customer-product-ai-blueprint
+
+  # ---------- NoSQL : MongoDB réactif ----------
+  data:
+    mongodb:
+      uri: mongodb://localhost:27017/blueprint
+      auto-index-creation: true   # index uniques sur email et sku
+
+  ai:
+    # Spring AI a son propre RetryTemplate (10 tentatives, backoff exponentiel jusqu'à 3 min !).
+    # On le désactive : UNE SEULE couche de résilience, Resilience4j, configurée plus bas.
+    retry:
+      max-attempts: 1
+    # ---------- IA locale : Ollama ----------
+    ollama:
+      base-url: http://localhost:11434
+      init:
+        pull-model-strategy: never      # mettre "when_missing" pour télécharger automatiquement les modèles
+      chat:
+        options:
+          model: llama3.2
+          temperature: 0.2              # faible = réponses plus factuelles (moins d'hallucinations)
+      embedding:
+        options:
+          model: nomic-embed-text
+
+    # ---------- MCP : serveur d'outils standardisé ----------
+    mcp:
+      server:
+        name: customer-product-mcp
+        version: 1.0.0
+        type: ASYNC                     # serveur non bloquant (WebFlux)
+        protocol: STATELESS             # un simple POST JSON-RPC sur /mcp suffit (curl-friendly)
+        instructions: "Outils CRUD pour gérer les clients (Customer) et les produits (Product) du catalogue."
+        streamable-http:
+          mcp-endpoint: /mcp
+
+# ---------- Paramètres applicatifs ----------
+blueprint:
+  demo-data:
+    enabled: true                       # insère 5 produits de démo si le catalogue est vide
+  rag:
+    similarity-threshold: 0.3           # score minimal de similarité cosinus pour le RAG
+  ai:
+    stream-idle-timeout: 60s            # délai max entre deux tokens avant de considérer Llama "gelé"
+
+# ---------- Résilience : Resilience4j (protège les appels vers Ollama) ----------
+resilience4j:
+  circuitbreaker:
+    instances:
+      ollama:
+        register-health-indicator: true
+        sliding-window-type: COUNT_BASED
+        sliding-window-size: 10
+        minimum-number-of-calls: 4      # au moins 4 appels avant d'évaluer le taux d'échec
+        failure-rate-threshold: 50      # ≥ 50 % d'échecs → circuit OUVERT
+        wait-duration-in-open-state: 20s
+        permitted-number-of-calls-in-half-open-state: 2
+        automatic-transition-from-open-to-half-open-enabled: true
+        ignore-exceptions:
+          - io.github.resilience4j.ratelimiter.RequestNotPermitted
+          - com.example.blueprint.domain.shared.DomainValidationException
+  retry:
+    instances:
+      ollama:
+        max-attempts: 2                 # 1 appel + 1 nouvelle tentative
+        wait-duration: 500ms
+        ignore-exceptions:
+          - io.github.resilience4j.circuitbreaker.CallNotPermittedException
+          - io.github.resilience4j.ratelimiter.RequestNotPermitted
+  ratelimiter:
+    instances:
+      ollama:
+        limit-for-period: 10            # 10 requêtes IA ...
+        limit-refresh-period: 1s        # ... par seconde
+        timeout-duration: 0             # pas d'attente : refus immédiat → fallback
+
+# ---------- API-First : Swagger UI affiche le CONTRAT écrit à la main ----------
+springdoc:
+  swagger-ui:
+    url: /openapi/api-spec.yaml
+
+# ---------- Observabilité ----------
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info,circuitbreakers,retries,ratelimiters
+  endpoint:
+    health:
+      show-details: always
+  health:
+    circuitbreakers:
+      enabled: true
+
+logging:
+  level:
+    com.example.blueprint: INFO
